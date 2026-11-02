@@ -1,44 +1,99 @@
 mod model;
 mod icons;
 mod lookup;
+mod meta;
+mod tree;
+mod init;
 
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-struct Config {
-    use_unicode: bool,
+pub struct Config {
+    pub use_unicode: bool,
+    pub long_listing: bool,
+    pub show_all: bool,
+    pub tree_mode: bool,
+    pub max_depth: usize,
 }
 
 fn main() {
     let raw_args: Vec<String> = env::args().skip(1).collect();
 
-    // Check if user set the mode via environment variable or flag
+    // 1. Fast path: Shell hook generation (must run in < 1ms)
+    if let [cmd, shell] = raw_args.as_slice() {
+        if cmd == "init" {
+            init::print_init(shell);
+            return;
+        }
+    }
+
     let mut use_unicode = env::var("TERMICON_MODE")
         .map(|v| v.to_lowercase() == "unicode" || v.to_lowercase() == "emoji")
         .unwrap_or(false);
 
-    // Filter out our optional --emoji / --unicode flag
-    let args: Vec<String> = raw_args
-        .into_iter()
-        .filter(|arg| {
-            if arg == "--emoji" || arg == "--unicode" {
-                use_unicode = true;
-                false
-            } else {
-                true
+    let mut long_listing = false;
+    let mut show_all = false;
+    let mut tree_mode = false;
+    let mut max_depth = 3;
+    let mut targets: Vec<String> = Vec::new();
+    let mut command: Option<String> = None;
+
+    let mut iter = raw_args.into_iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print_help();
+                return;
             }
-        })
-        .collect();
+            "-v" | "--version" => {
+                println!("termicon v{}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            "--emoji" | "--unicode" => {
+                use_unicode = true;
+            }
+            "-l" => long_listing = true,
+            "-a" | "--all" => show_all = true,
+            "-la" | "-al" => {
+                long_listing = true;
+                show_all = true;
+            }
+            "-t" | "--tree" => tree_mode = true,
+            "-L" | "--level" => {
+                if let Some(level_str) = iter.next() {
+                    if let Ok(lvl) = level_str.parse::<usize>() {
+                        max_depth = lvl;
+                    }
+                }
+            }
+            "icon" => {
+                command = Some("icon".to_string());
+                if let Some(target) = iter.next() {
+                    targets.push(target);
+                }
+            }
+            arg if !arg.starts_with('-') => {
+                targets.push(arg.to_string());
+            }
+            _ => {}
+        }
+    }
 
-    let config = Config { use_unicode };
+    let config = Config {
+        use_unicode,
+        long_listing,
+        show_all,
+        tree_mode,
+        max_depth,
+    };
 
-    // 1. Pipe / STDIN Mode
+    // 2. Pipe / STDIN Mode
     if atty_check_stdin() {
         let stdin = io::stdin();
         let mut stdout = io::BufWriter::new(io::stdout());
-        
+
         for line in stdin.lock().lines().flatten() {
             let path = Path::new(&line);
             let is_dir = path.is_dir();
@@ -48,44 +103,52 @@ fn main() {
         return;
     }
 
-    // 2. CLI Arguments
-    match args.as_slice() {
-        [] => list_directory(Path::new("."), &config),
-
-        [cmd, target] if cmd == "icon" => {
+    // 3. Query Mode: `termicon icon <target>`
+    if command.as_deref() == Some("icon") {
+        if let Some(target) = targets.first() {
             let path = Path::new(target);
             let is_dir = path.is_dir();
             let icon = lookup::resolve_icon(path, is_dir);
             print!("{}", icon.render(config.use_unicode));
         }
+        return;
+    }
 
-        [flag] if flag == "--help" || flag == "-h" => {
-            print_help();
-        }
+    // 4. Tree Mode or Standard Directory Listing
+    let run_targets = if targets.is_empty() {
+        vec![".".to_string()]
+    } else {
+        targets
+    };
 
-        [flag] if flag == "--version" || flag == "-v" => {
-            println!("termicon v{}", env!("CARGO_PKG_VERSION"));
-        }
-
-        [target] => {
-            let path = Path::new(target);
-            if path.is_dir() {
-                list_directory(path, &config);
-            } else {
-                let icon = lookup::resolve_icon(path, false);
-                println!("{}  {}", icon.render(config.use_unicode), target);
+    for target in &run_targets {
+        let path = Path::new(target);
+        if config.tree_mode {
+            tree::print_tree(path, &config, config.max_depth);
+        } else if path.is_dir() {
+            if run_targets.len() > 1 {
+                println!("\n{}:", target);
             }
-        }
-
-        _ => {
-            print_help();
+            list_directory(path, &config);
+        } else {
+            let icon = lookup::resolve_icon(path, false);
+            println!("{}  {}", icon.render(config.use_unicode), target);
         }
     }
 }
 
 fn list_directory(dir: &Path, config: &Config) {
     let mut entries = match fs::read_dir(dir) {
-        Ok(read_dir) => read_dir.filter_map(|e| e.ok()).collect::<Vec<_>>(),
+        Ok(read_dir) => read_dir
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                if config.show_all {
+                    true
+                } else {
+                    !e.file_name().to_string_lossy().starts_with('.')
+                }
+            })
+            .collect::<Vec<_>>(),
         Err(err) => {
             eprintln!("termicon: {}: {}", dir.display(), err);
             return;
@@ -103,7 +166,25 @@ fn list_directory(dir: &Path, config: &Config) {
         let path = entry.path();
         let icon = lookup::resolve_icon(&path, is_dir);
         let file_name = entry.file_name().to_string_lossy().to_string();
-        
+
+        if config.long_listing {
+            if let Ok(metadata) = entry.metadata() {
+                let meta_info = meta::format_metadata(&metadata);
+                let _ = writeln!(
+                    handle,
+                    "{} {:>8} {:>8} {:>8}  {}  {}  {}",
+                    meta_info.permissions,
+                    meta_info.user,
+                    meta_info.group,
+                    meta_info.size,
+                    meta_info.modified,
+                    icon.render(config.use_unicode),
+                    file_name
+                );
+                continue;
+            }
+        }
+
         let _ = writeln!(handle, "{}  {}", icon.render(config.use_unicode), file_name);
     }
 }
@@ -117,16 +198,19 @@ fn print_help() {
         "termicon - High-speed file icon engine for macOS
 
 USAGE:
-    termicon [PATH]             List directory contents with icons
-    termicon icon <PATH>        Print only the colored icon glyph
-    <command> | termicon        Prefix lines received from STDIN with icons
+    termicon [FLAGS] [PATH]...
+    termicon icon <PATH>
+    termicon init <zsh|bash|fish>
+    <command> | termicon
 
-OPTIONS:
+FLAGS:
+    -l                          Use long listing format (permissions, size, date)
+    -a, --all                   Do not ignore hidden entries starting with .
+    -la, -al                    Combined long listing and hidden files
+    -t, --tree                  Recurse into directories as a tree
+    -L, --level <NUM>           Max display depth of the directory tree (default: 3)
     --emoji, --unicode          Use standard macOS emojis instead of Nerd Fonts
     -h, --help                  Print help information
-    -v, --version               Print version information
-
-ENV VARIABLES:
-    TERMICON_MODE=unicode       Default to emoji/unicode icons permanently"
+    -v, --version               Print version information"
     );
 }

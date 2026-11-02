@@ -6,7 +6,7 @@ class Termicon < Formula
 
   # We use the universal binary built for macOS
   if OS.mac?
-    url "https://github.com/your-username/termicon/releases/download/v#{version}/termicon-macOS-universal.tar.gz"
+    url "https://github.com/agaafar7/termicon/releases/download/v#{version}/termicon-macOS-universal.tar.gz"
     # Replace this with the real sha256 from: shasum -a 256 termicon-macOS-universal.tar.gz
     sha256 "PLACEHOLDER_SHA256"
   end
