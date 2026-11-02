@@ -1,0 +1,52 @@
+name: Release Universal Binary
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build Apple Silicon (aarch64)
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build Intel (x86_64)
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Fuse Universal Binary with lipo
+        run: |
+          mkdir -p bin
+          lipo -create -output bin/termicon \
+            target/aarch64-apple-darwin/release/termicon \
+            target/x86_64-apple-darwin/release/termicon
+          chmod +x bin/termicon
+
+      - name: Package Universal Archive
+        run: |
+          cd bin
+          tar -czf ../termicon-macOS-universal.tar.gz termicon
+          cd ..
+          shasum -a 256 termicon-macOS-universal.tar.gz > termicon-macOS-universal.tar.gz.sha256
+          echo "SHA256: $(cat termicon-macOS-universal.tar.gz.sha256)"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            termicon-macOS-universal.tar.gz
+            termicon-macOS-universal.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

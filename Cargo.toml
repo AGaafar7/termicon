@@ -1,0 +1,20 @@
+[package]
+name = "termicon"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ahmed Gaafar <a.gaafar.junior@gmail.com>"]
+description = "Blazing-fast Nerd Font icons for native macOS terminals"
+license = "MIT"
+
+[dependencies]
+libc = "0.2.191"
+# Compile-time perfect hash map for zero-runtime lookup overhead
+phf = { version = "0.11", features = ["macros"] }
+
+[profile.release]
+# Aggressive binary size and runtime optimizations
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
