@@ -19,7 +19,7 @@
 
 ### Via Homebrew (Recommended)
 ```bash
-brew tap your-username/tap
+brew tap agaafar7/tap
 brew install termicon
 
 Manual Install (Universal macOS Binary)
